@@ -40,7 +40,7 @@ const ATTORNEY_REVIEW = {
   status: "pending", // "pending" | "under_review" | "published"
   attorneyName: "", barNumber: "", firm: "", reviewDate: "", opinion: "",
   contactEmail: "txgrassrootspoll@proton.me",
-  repoUrl: "https://github.com/[your-repo-here]",
+  repoUrl: "https://github.com/regelus19/Texas-Straw-Poll",
 };
 
 const TIERS = {
