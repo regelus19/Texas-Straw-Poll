@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL = "https://qakqfiwvdkoblqnjphrx.supabase.co";
 const SUPABASE_KEY = "sb_publishable_hpLc9eLxXK3hMSEXeZBZDg_OyRXYSXv";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -153,6 +153,12 @@ async function computeFingerprint() {
 // ─── PROOF-OF-WORK ────────────────────────────────────────────────────────────
 // FIX 5/5: PoW challenge before vote submission
 // Targets ~200ms on typical device. Raises cost for bot-flooding significantly.
+async function hashEmail(email) {
+  const data = new TextEncoder().encode(email.toLowerCase().trim());
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 function simpleHash32(s) {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
@@ -722,6 +728,13 @@ export default function App() {
   const [alreadyVotedWarning, setAlreadyVotedWarning] = useState(null);
   const fpRef = useRef(null);
   const fpReady = useRef(false);
+  const [email, setEmail] = useState("");
+  const [emailCode, setEmailCode] = useState("");
+  const [emailSent, setEmailSent] = useState(false);
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [emailError, setEmailError] = useState("");
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [attested, setAttested] = useState(false);
 
   // Compute fingerprint async on mount
   useEffect(() => {
@@ -792,7 +805,34 @@ export default function App() {
     if (!/^\d{5}$/.test(z)) { setZipState("err"); setZipErr("INVALID FORMAT — 5 DIGITS REQUIRED"); return; }
     if (!isTexasZip(z)) { setZipState("err"); setZipErr("NOT A TEXAS ZIP — OPEN TO TEXAS RESIDENTS ONLY"); return; }
     setZipState("ok");
-    setTimeout(() => setStep(1), 360);
+    setTimeout(() => setStep(0.5), 360);
+  };
+
+  const sendEmailCode = async () => {
+    const e = email.trim().toLowerCase();
+    if (!/^[^@]+@[^@]+\.[^@]+$/.test(e)) { setEmailError("Please enter a valid email address."); return; }
+    setEmailLoading(true); setEmailError("");
+    try {
+      const { error } = await supabase.auth.signInWithOtp({ email: e, options: { shouldCreateUser: true } });
+      if (error) throw error;
+      setEmailSent(true);
+    } catch { setEmailError("Failed to send code. Please try again."); }
+    finally { setEmailLoading(false); }
+  };
+
+  const verifyEmailCode = async () => {
+    const e = email.trim().toLowerCase();
+    setEmailLoading(true); setEmailError("");
+    try {
+      const { error } = await supabase.auth.verifyOtp({ email: e, token: emailCode, type: "email" });
+      if (error) throw error;
+      const hash = await hashEmail(e);
+      const { data } = await supabase.from("verified_voters").select("id").eq("email_hash", hash).eq("phase", "primary").eq("race_key", RACE_KEY);
+      if (data && data.length > 0) { setEmailError("This email has already participated in the primary phase."); setEmailLoading(false); return; }
+      setEmailVerified(true);
+      setStep(1);
+    } catch { setEmailError("Invalid or expired code. Please try again."); }
+    finally { setEmailLoading(false); }
   };
 
   const selectParty = (p) => {
@@ -859,6 +899,8 @@ export default function App() {
         setPrimaryResult(newResult);
         setHasVotedPrimary(true);
         setMyPrimaryVote(selPrimary.id);
+        // Store hashed email to prevent re-voting
+        if (email) { hashEmail(email).then(hash => { supabase.from("verified_voters").insert({ email_hash: hash, phase: "primary", race_key: RACE_KEY }).then(() => {}); }); }
         const session = { party, hasVotedPrimary: true, primaryVote: selPrimary.id };
         await safeSet(`${RACE_KEY}:session_record`, JSON.stringify(session));
         if (newResult.status === "runoff") {
@@ -1023,6 +1065,47 @@ export default function App() {
         )}
 
         {/* ═══ PARTY SELECT — IDENTICAL TREATMENT ═══ */}
+        {step === 0.5 && (
+          <div className="screen">
+            <div className="slabel">Step 01b — Email Verification</div>
+            <div className="heading">Verify Your Email</div>
+            <div className="sub">One verified email per phase ensures reliable results.</div>
+            <div className="dbox"><strong>PRIVACY:</strong> We send a one-time code to your email. Your address is immediately hashed (SHA-256) and never stored in plain text. This prevents duplicate votes across incognito windows and devices.</div>
+            {!emailSent ? (
+              <div style={{marginTop:14}}>
+                <label className="inp-label" htmlFor="email-input">Your Email Address</label>
+                <input id="email-input"
+                  style={{width:"100%",background:"var(--bg3)",border:"1px solid var(--border)",padding:"11px 16px",fontFamily:"var(--mono)",fontSize:16,color:"var(--amber)",outline:"none",caretColor:"var(--amber)",marginBottom:8,boxSizing:"border-box"}}
+                  type="email" placeholder="you@example.com" value={email}
+                  onChange={e=>{setEmail(e.target.value);setEmailError("");}}
+                  onKeyDown={e=>e.key==="Enter"&&sendEmailCode()}
+                  aria-label="Email address"/>
+                {emailError && <div className="err-msg" role="alert">▲ {emailError}</div>}
+                <button className="btn btn-primary" onClick={sendEmailCode} disabled={emailLoading||!email}>
+                  {emailLoading ? "Sending…" : "Send Verification Code ▶"}
+                </button>
+              </div>
+            ) : (
+              <div style={{marginTop:14}}>
+                <div style={{color:"var(--ok)",marginBottom:12,fontFamily:"var(--mono)",fontSize:13}}>✓ Code sent to {email} — check your inbox (and spam folder)</div>
+                <label className="inp-label" htmlFor="code-input">Enter 6-Digit Code</label>
+                <input id="code-input"
+                  style={{width:"100%",background:"var(--bg3)",border:"1px solid var(--border)",padding:"11px 16px",fontFamily:"var(--mono)",fontSize:28,letterSpacing:".22em",color:"var(--amber)",outline:"none",caretColor:"var(--amber)",marginBottom:8,boxSizing:"border-box"}}
+                  type="text" inputMode="numeric" maxLength={6} placeholder="______" value={emailCode}
+                  onChange={e=>{setEmailCode(e.target.value.replace(/\D/g,"").slice(0,6));setEmailError("");}}
+                  onKeyDown={e=>e.key==="Enter"&&verifyEmailCode()}
+                  aria-label="Verification code"/>
+                {emailError && <div className="err-msg" role="alert">▲ {emailError}</div>}
+                <button className="btn btn-primary" onClick={verifyEmailCode} disabled={emailLoading||emailCode.length!==6}>
+                  {emailLoading ? "Verifying…" : "Verify & Continue ▶"}
+                </button>
+                <button className="btn btn-ghost" style={{marginTop:8}} onClick={()=>{setEmailSent(false);setEmailCode("");setEmailError("");}}>◀ Use Different Email</button>
+              </div>
+            )}
+            <button className="btn btn-ghost" style={{marginTop:8}} onClick={()=>setStep(0)}>◀ Back to ZIP</button>
+          </div>
+        )}
+
         {step === 1 && (
           <div className="screen">
             <div className="slabel">Step 02 — Primary Selection</div>
@@ -1086,9 +1169,15 @@ export default function App() {
                 </div>
               </div>
             )}
+            <div style={{marginTop:12,marginBottom:4}}>
+              <label style={{display:"flex",alignItems:"flex-start",gap:10,cursor:"pointer",fontFamily:"var(--mono)",fontSize:12,color:"var(--muted)",lineHeight:1.5}}>
+                <input type="checkbox" checked={attested} onChange={e=>setAttested(e.target.checked)}
+                  style={{marginTop:2,accentColor:"var(--amber)",width:16,height:16,flexShrink:0}}/>
+                <span>I confirm I am a <strong style={{color:"var(--amber)"}}>registered voter residing in Texas</strong>, I am 18 years of age or older, and I understand this is an unofficial non-scientific straw poll.</span>
+              </label>
+            </div>
             <div className="warn-row">⚠ Final — cannot be changed or retracted after submission.</div>
-            <div className="warn-row">⚠ Confirms you are a Texas resident and agree to one entry per phase.</div>
-            <button className="btn btn-primary" onClick={submitPrimary} disabled={loading} aria-label="Submit primary vote">
+            <button className="btn btn-primary" onClick={submitPrimary} disabled={loading||!attested} aria-label="Submit primary vote">
               {loading ? <><span className="spin" /> Verifying…</> : <>Submit Primary Vote ★</>}
             </button>
             <button className="btn btn-ghost" onClick={() => setStep(2)} disabled={loading}>◀ Change Selection</button>
@@ -1172,7 +1261,7 @@ export default function App() {
             </div>
 
             <div className="tabs" role="tablist">
-              {[["results", "Results"], ["integrity", "Integrity"], ["about", "About & Legal"]].map(([k, l]) => (
+              {[["results", "Results"], ["integrity", "Integrity"], ["about", "About & Legal"], ["share", "Share ★"]].map(([k, l]) => (
                 <button key={k} className={`tab ${activeTab === k ? "active" : ""}`}
                   onClick={() => setActiveTab(k)} role="tab" aria-selected={activeTab === k}>{l}</button>
               ))}
@@ -1257,7 +1346,38 @@ export default function App() {
                   <AttorneyPanel review={ATTORNEY_REVIEW} />
                 </div>
               </>
-            )}
+            )
+
+            {activeTab === "share" && (
+              <div style={{padding:"8px 0"}}>
+                <div style={{fontFamily:"var(--mono)",fontSize:13,color:"var(--amber)",marginBottom:16,textTransform:"uppercase",letterSpacing:".1em"}}>★ Invite Fellow Texans</div>
+                <div style={{fontFamily:"var(--mono)",fontSize:12,color:"var(--muted)",marginBottom:16,lineHeight:1.6}}>
+                  {totalPrimary > 0 ? `${totalPrimary} Texan${totalPrimary!==1?"s":""} have weighed in — help grow the sample before March 3.` : "Be among the first — share the poll and help grow the sample."}
+                </div>
+                <div style={{background:"var(--bg3)",border:"1px solid var(--amber)",padding:"12px 14px",marginBottom:16,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",borderRadius:2}}>
+                  <span style={{fontFamily:"var(--mono)",fontSize:13,color:"var(--amber)",flex:1,wordBreak:"break-all"}}>texas-straw-poll.vercel.app</span>
+                  <button onClick={()=>navigator.clipboard.writeText("https://texas-straw-poll.vercel.app")}
+                    style={{background:"var(--amber)",color:"#000",border:"none",padding:"7px 16px",fontFamily:"var(--mono)",fontSize:12,cursor:"pointer",textTransform:"uppercase",fontWeight:700,flexShrink:0,letterSpacing:".05em"}}>
+                    Copy Link
+                  </button>
+                </div>
+                {[
+                  {label:"Text / iMessage",msg:"Hey — there's a grassroots straw poll for the 2026 Texas U.S. Senate race. Non-partisan, email verified, one vote per person. Takes 2 minutes:\nhttps://texas-straw-poll.vercel.app"},
+                  {label:"Nextdoor",msg:"Neighbors — sharing this non-partisan straw poll for the 2026 Texas U.S. Senate primary. It uses email verification to prevent duplicates and is fully open source. Add your voice before March 3:\nhttps://texas-straw-poll.vercel.app"},
+                  {label:"Twitter / X",msg:"Texas voters — add your voice to the 2026 U.S. Senate straw poll. Non-partisan · Email verified · Open source.\nhttps://texas-straw-poll.vercel.app #Texas2026 #TXSen"},
+                  {label:"Email",msg:"Subject: Non-Partisan Texas Senate Straw Poll — Your Voice Before March 3\n\nHi,\n\nWanted to share a grassroots straw poll for the 2026 Texas U.S. Senate primary (March 3).\n\nIt uses email verification to prevent duplicates, cryptographic candidate ordering, and open-source code.\n\nTakes about 2 minutes:\nhttps://texas-straw-poll.vercel.app\n\nNot affiliated with any campaign, party, or PAC."}
+                ].map(({label,msg})=>(
+                  <div key={label} style={{marginBottom:12}}>
+                    <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--muted)",marginBottom:4,textTransform:"uppercase",letterSpacing:".08em"}}>{label}</div>
+                    <div style={{background:"var(--bg3)",border:"1px solid var(--border)",padding:"10px 12px",fontFamily:"var(--mono)",fontSize:12,color:"var(--fg)",lineHeight:1.6,whiteSpace:"pre-wrap",marginBottom:4,borderRadius:2}}>{msg}</div>
+                    <button onClick={()=>navigator.clipboard.writeText(msg)}
+                      style={{background:"transparent",border:"1px solid var(--border)",color:"var(--amber)",padding:"5px 14px",fontFamily:"var(--mono)",fontSize:11,cursor:"pointer",textTransform:"uppercase",letterSpacing:".05em"}}>
+                      Copy
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}}
           </div>
         )}
 
