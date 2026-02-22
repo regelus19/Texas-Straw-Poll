@@ -805,7 +805,7 @@ export default function App() {
     if (!/^\d{5}$/.test(z)) { setZipState("err"); setZipErr("INVALID FORMAT — 5 DIGITS REQUIRED"); return; }
     if (!isTexasZip(z)) { setZipState("err"); setZipErr("NOT A TEXAS ZIP — OPEN TO TEXAS RESIDENTS ONLY"); return; }
     setZipState("ok");
-    setTimeout(() => setStep(0.5), 360);
+    setTimeout(() => setStep(1), 360);
   };
 
   const sendEmailCode = async () => {
