@@ -1,4 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createClient } from "@supabase/supabase-js";
+const SUPABASE_URL = "https://qakqfiwvdkoblqnjphrx.supabase.co";
+const SUPABASE_KEY = "sb_publishable_hpLc9eLxXK3hMSEXeZBZDg_OyRXYSXv";
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ─── ELECTION KEY ─────────────────────────────────────────────────────────────
 // ★ CHANGE THIS for any new race/cycle to prevent storage bleed ★
@@ -178,10 +182,34 @@ const safeLocalGet = (k) => { try { return localStorage.getItem(k); } catch { re
 const safeLocalSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } };
 
 const safeGet = async (k, shared = false) => {
-  try { return await window.storage.get(k, shared); } catch { return null; }
+  if (!shared) { const v = safeLocalGet(k); return v ? { value: v } : null; }
+  try {
+    const parts = k.split(":");
+    if (parts.length >= 4 && parts[1] === "tally") {
+      const race_key = parts[0], phase = parts[2], candidate_id = parts.slice(3).join(":");
+      const { data } = await supabase.from("votes").select("count").eq("race_key", race_key).eq("phase", phase).eq("candidate_id", candidate_id).single();
+      return data ? { value: String(data.count) } : null;
+    }
+    const v = safeLocalGet(k); return v ? { value: v } : null;
+  } catch { return null; }
 };
+
 const safeSet = async (k, v, shared = false) => {
-  try { return await window.storage.set(k, v, shared); } catch { return null; }
+  if (!shared) { safeLocalSet(k, v); return { value: v }; }
+  try {
+    const parts = k.split(":");
+    if (parts.length >= 4 && parts[1] === "tally") {
+      const race_key = parts[0], phase = parts[2], candidate_id = parts.slice(3).join(":");
+      const count = parseInt(v, 10) || 0;
+      const { error } = await supabase.from("votes").upsert(
+        { race_key, phase, candidate_id, count, updated_at: new Date().toISOString() },
+        { onConflict: "race_key,phase,candidate_id" }
+      );
+      if (error) throw error;
+      return { value: v };
+    }
+    safeLocalSet(k, v); return { value: v };
+  } catch (e) { console.error("safeSet error", e); return null; }
 };
 
 // Vote lock: stored in localStorage (local) + shared storage flag
