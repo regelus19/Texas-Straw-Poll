@@ -1346,7 +1346,7 @@ export default function App() {
                   <AttorneyPanel review={ATTORNEY_REVIEW} />
                 </div>
               </>
-            )
+            )}
 
             {activeTab === "share" && (
               <div style={{padding:"8px 0"}}>
