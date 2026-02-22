@@ -813,7 +813,7 @@ export default function App() {
     if (!/^[^@]+@[^@]+\.[^@]+$/.test(e)) { setEmailError("Please enter a valid email address."); return; }
     setEmailLoading(true); setEmailError("");
     try {
-      const { error } = await supabase.auth.signInWithOtp({ email: e, options: { shouldCreateUser: true } });
+      const { error } = await supabase.auth.signInWithOtp({ email: e, options: { shouldCreateUser: true, emailRedirectTo: null } });
       if (error) throw error;
       setEmailSent(true);
     } catch { setEmailError("Failed to send code. Please try again."); }
